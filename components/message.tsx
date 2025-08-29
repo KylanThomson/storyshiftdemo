@@ -19,6 +19,17 @@ import { MessageReasoning } from './message-reasoning';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import type { ChatMessage } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
+import { parseRetrievedFacts } from '@/lib/graphrag/parse-retrieved-facts';
+import { KnowledgeGraphViewer } from './knowledge-graph';
+import { StructuredResponseComponent } from './structured-response';
+import type { StructuredGraphRAGResponse } from '@/lib/graphrag/api';
+import {
+  parseStructuredGraphRAGResponse,
+  parseLegacyGraphRAGResponse,
+  hasKnowledgeGraphData,
+  hasDebugInfo,
+  type StructuredParsedResponse
+} from '@/lib/graphrag/parse-structured-response';
 
 // Type narrowing is handled by TypeScript's control flow analysis
 // The AI SDK provides proper discriminated unions for tool calls
@@ -49,6 +60,31 @@ const PurePreviewMessage = ({
   );
 
   useDataStream();
+
+  // Helper function to detect if text contains structured response data
+  const detectStructuredResponse = (text: string): StructuredGraphRAGResponse | null => {
+    try {
+      // Look for JSON-like structured response in the text
+      const jsonMatch = text.match(/\{[\s\S]*"structured_response"[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.structured_response && parsed.tenant && parsed.question) {
+          return parsed as StructuredGraphRAGResponse;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Helper function to handle suggested action clicks
+  const handleSuggestedActionClick = (action: string) => {
+    // You can implement this to send the action as a new message
+    // For now, we'll just log it
+    console.log('Suggested action clicked:', action);
+    // TODO: Integrate with chat system to send new message
+  };
 
   return (
     <AnimatePresence>
@@ -115,6 +151,40 @@ const PurePreviewMessage = ({
 
               if (type === 'text') {
                 if (mode === 'view') {
+                  // First, try to detect if this is a structured response
+                  const structuredResponse = message.role === 'assistant' ? detectStructuredResponse(part.text ?? '') : null;
+
+                  let parsedData: StructuredParsedResponse | null = null;
+
+                  if (structuredResponse) {
+                    // Handle structured response
+                    parsedData = parseStructuredGraphRAGResponse(
+                      structuredResponse.structured_response,
+                      structuredResponse.sources,
+                      structuredResponse.factsPreview
+                    );
+                  } else if (message.role === 'assistant') {
+                    // Fallback to legacy parsing for backward compatibility
+                    const legacyParsed = parseRetrievedFacts(part.text ?? '');
+                    if (legacyParsed) {
+                      parsedData = parseLegacyGraphRAGResponse(
+                        legacyParsed.cleanText,
+                        [], // No sources in legacy format
+                        []  // No factsPreview in legacy format
+                      );
+                      // Copy over the legacy parsed data
+                      parsedData.nodes = legacyParsed.nodes;
+                      parsedData.edges = legacyParsed.edges;
+                      parsedData.types = legacyParsed.types;
+                      parsedData.sourceIndexToUrl = legacyParsed.sourceIndexToUrl;
+                      parsedData.preamble = legacyParsed.preamble;
+                    }
+                  }
+
+                  const displayText = parsedData?.chatResponse || (part.text ?? '');
+                  const hasKG = parsedData ? hasKnowledgeGraphData(parsedData) : false;
+                  const hasDebugData = parsedData ? hasDebugInfo(parsedData) : false;
+
                   return (
                     <div key={key} className="flex flex-row gap-2 items-start">
                       {message.role === 'user' && !isReadonly && (
@@ -137,12 +207,61 @@ const PurePreviewMessage = ({
 
                       <div
                         data-testid="message-content"
-                        className={cn('flex flex-col gap-4', {
-                          'bg-primary text-primary-foreground px-3 py-2 rounded-xl':
-                            message.role === 'user',
-                        })}
+                        className={cn(
+                          'flex flex-col gap-4 px-3 py-2 rounded-2xl text-foreground glass-chat brand-surface brand-border-accent',
+                          {
+                            'neon-border': message.role === 'user',
+                          },
+                        )}
                       >
-                        <Markdown>{sanitizeText(part.text)}</Markdown>
+                        {/* Render structured response if available */}
+                        {structuredResponse ? (
+                          <StructuredResponseComponent
+                            structuredResponse={structuredResponse.structured_response}
+                            sources={structuredResponse.sources}
+                            onSuggestedActionClick={handleSuggestedActionClick}
+                          />
+                        ) : (
+                          <Markdown>{sanitizeText(displayText)}</Markdown>
+                        )}
+
+                        {/* Show knowledge graph and debug info for both structured and legacy responses */}
+                        {(hasKG || hasDebugData) && (
+                          <details className="mt-2">
+                            <summary className="cursor-pointer select-none text-sm text-muted-foreground hover:text-foreground">
+                              Visualize knowledge graph - Verify source materials
+                            </summary>
+                            <div className="mt-2 flex flex-col gap-3">
+                              {parsedData?.preamble && (
+                                <div className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground whitespace-pre-wrap max-h-60 overflow-auto">
+                                  {parsedData.preamble}
+                                </div>
+                              )}
+                              {hasKG && parsedData ? (
+                                <KnowledgeGraphViewer
+                                  nodes={parsedData.nodes}
+                                  edges={parsedData.edges}
+                                  types={parsedData.types}
+                                  sourcesByIndex={parsedData.sourceIndexToUrl}
+                                />
+                              ) : null}
+                            </div>
+                          </details>
+                        )}
+
+                        {/* Debug: Show full response data in console and optionally on screen */}
+                        {structuredResponse && (
+                          <details className="mt-2">
+                            <summary className="cursor-pointer select-none text-sm text-muted-foreground hover:text-foreground">
+                              🔍 Debug: Full Response Data
+                            </summary>
+                            <div className="mt-2">
+                              <pre className="text-xs bg-muted/30 p-3 rounded-md overflow-auto max-h-60 whitespace-pre-wrap">
+                                {JSON.stringify(structuredResponse, null, 2)}
+                              </pre>
+                            </div>
+                          </details>
+                        )}
                       </div>
                     </div>
                   );
@@ -352,10 +471,7 @@ export const ThinkingMessage = () => {
     >
       <div
         className={cx(
-          'flex gap-4 group-data-[role=user]/message:px-3 w-full group-data-[role=user]/message:w-fit group-data-[role=user]/message:ml-auto group-data-[role=user]/message:max-w-2xl group-data-[role=user]/message:py-2 rounded-xl',
-          {
-            'group-data-[role=user]/message:bg-muted': true,
-          },
+          'flex gap-4 group-data-[role=user]/message:px-3 w-full group-data-[role=user]/message:w-fit group-data-[role=user]/message:ml-auto group-data-[role=user]/message:max-w-2xl group-data-[role=user]/message:py-2 rounded-2xl glass-chat brand-border-accent',
         )}
       >
         <div className="size-8 flex items-center rounded-full justify-center ring-1 shrink-0 ring-border">

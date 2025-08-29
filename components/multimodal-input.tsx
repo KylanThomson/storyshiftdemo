@@ -21,6 +21,7 @@ import { PreviewAttachment } from './preview-attachment';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
 import { SuggestedActions } from './suggested-actions';
+import { DynamicSuggestedActions } from './dynamic-suggested-actions';
 import equal from 'fast-deep-equal';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -42,6 +43,7 @@ function PureMultimodalInput({
   sendMessage,
   className,
   selectedVisibilityType,
+  dynamicSuggestedActions,
 }: {
   chatId: string;
   input: string;
@@ -55,6 +57,7 @@ function PureMultimodalInput({
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
   className?: string;
   selectedVisibilityType: VisibilityType;
+  dynamicSuggestedActions?: Array<{ action: string; description: string }>;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
@@ -80,7 +83,7 @@ function PureMultimodalInput({
   };
 
   const [localStorageInput, setLocalStorageInput] = useLocalStorage(
-    'input',
+    `input:${chatId}`,
     '',
   );
 
@@ -109,6 +112,18 @@ function PureMultimodalInput({
   const [uploadQueue, setUploadQueue] = useState<Array<string>>([]);
 
   const submitForm = useCallback(() => {
+    // Guard: avoid clearing input if model is busy
+    if (status !== 'ready') {
+      toast.error('Please wait for the model to finish its response!');
+      return;
+    }
+
+    const trimmed = input.trim();
+    if (trimmed.length === 0 && attachments.length === 0) {
+      toast.error('Type a message or attach a file.');
+      return;
+    }
+
     window.history.replaceState({}, '', `/chat/${chatId}`);
 
     sendMessage({
@@ -120,10 +135,14 @@ function PureMultimodalInput({
           name: attachment.name,
           mediaType: attachment.contentType,
         })),
-        {
-          type: 'text',
-          text: input,
-        },
+        ...(trimmed.length > 0
+          ? [
+            {
+              type: 'text' as const,
+              text: trimmed,
+            },
+          ]
+          : []),
       ],
     });
 
@@ -136,6 +155,7 @@ function PureMultimodalInput({
       textareaRef.current?.focus();
     }
   }, [
+    status,
     input,
     setInput,
     attachments,
@@ -244,6 +264,15 @@ function PureMultimodalInput({
           />
         )}
 
+      {dynamicSuggestedActions && dynamicSuggestedActions.length > 0 && (
+        <DynamicSuggestedActions
+          chatId={chatId}
+          suggestedActions={dynamicSuggestedActions}
+          sendMessage={sendMessage}
+          selectedVisibilityType={selectedVisibilityType}
+        />
+      )}
+
       <input
         type="file"
         className="fixed -top-4 -left-4 size-0.5 opacity-0 pointer-events-none"
@@ -283,7 +312,7 @@ function PureMultimodalInput({
         value={input}
         onChange={handleInput}
         className={cx(
-          'min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl !text-base bg-muted pb-10 dark:border-zinc-700',
+          'min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl !text-base glass-chat brand-surface brand-border-accent brand-glow pb-10 pl-3 pr-20',
           className,
         )}
         rows={2}
@@ -310,11 +339,13 @@ function PureMultimodalInput({
       </div>
 
       <div className="absolute bottom-0 right-0 p-2 w-fit flex flex-row justify-end">
-        {status === 'submitted' ? (
+        {status !== 'ready' ? (
           <StopButton stop={stop} setMessages={setMessages} />
         ) : (
           <SendButton
             input={input}
+            attachments={attachments}
+            status={status}
             submitForm={submitForm}
             uploadQueue={uploadQueue}
           />
@@ -332,6 +363,8 @@ export const MultimodalInput = memo(
     if (!equal(prevProps.attachments, nextProps.attachments)) return false;
     if (prevProps.selectedVisibilityType !== nextProps.selectedVisibilityType)
       return false;
+    if (!equal(prevProps.dynamicSuggestedActions, nextProps.dynamicSuggestedActions))
+      return false;
 
     return true;
   },
@@ -347,7 +380,8 @@ function PureAttachmentsButton({
   return (
     <Button
       data-testid="attachments-button"
-      className="rounded-md rounded-bl-lg p-[7px] h-fit dark:border-zinc-700 hover:dark:bg-zinc-900 hover:bg-zinc-200"
+      type="button"
+      className="rounded-md rounded-bl-lg p-[7px] h-fit border brand-border-primary brand-glow dark:border-zinc-700 hover:dark:bg-zinc-900 hover:bg-zinc-200"
       onClick={(event) => {
         event.preventDefault();
         fileInputRef.current?.click();
@@ -372,7 +406,8 @@ function PureStopButton({
   return (
     <Button
       data-testid="stop-button"
-      className="rounded-full p-1.5 h-fit border dark:border-zinc-600"
+      type="button"
+      className="rounded-full p-1.5 h-fit border brand-border-primary brand-glow dark:border-zinc-600"
       onClick={(event) => {
         event.preventDefault();
         stop();
@@ -389,21 +424,31 @@ const StopButton = memo(PureStopButton);
 function PureSendButton({
   submitForm,
   input,
+  attachments,
   uploadQueue,
+  status,
 }: {
   submitForm: () => void;
   input: string;
+  attachments: Array<Attachment>;
   uploadQueue: Array<string>;
+  status: UseChatHelpers<ChatMessage>['status'];
 }) {
+  const isDisabled =
+    status !== 'ready' ||
+    (input.trim().length === 0 && attachments.length === 0) ||
+    uploadQueue.length > 0;
+
   return (
     <Button
       data-testid="send-button"
-      className="rounded-full p-1.5 h-fit border dark:border-zinc-600"
+      type="button"
+      className="rounded-full p-1.5 h-fit border brand-border-primary brand-glow dark:border-zinc-600"
       onClick={(event) => {
         event.preventDefault();
         submitForm();
       }}
-      disabled={input.length === 0 || uploadQueue.length > 0}
+      disabled={isDisabled}
     >
       <ArrowUpIcon size={14} />
     </Button>
@@ -414,5 +459,7 @@ const SendButton = memo(PureSendButton, (prevProps, nextProps) => {
   if (prevProps.uploadQueue.length !== nextProps.uploadQueue.length)
     return false;
   if (prevProps.input !== nextProps.input) return false;
+  if (prevProps.status !== nextProps.status) return false;
+  if (prevProps.attachments.length !== nextProps.attachments.length) return false;
   return true;
 });

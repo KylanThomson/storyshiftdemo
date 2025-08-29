@@ -25,6 +25,11 @@
   - Unified API for generating text, structured objects, and tool calls with LLMs
   - Hooks for building dynamic chat and generative user interfaces
   - Supports xAI (default), OpenAI, Fireworks, and other model providers
+- **Knowledge Graph Integration**
+  - Fast GraphRAG (Graph Retrieval-Augmented Generation) system
+  - Interactive knowledge graph visualization with SVG rendering
+  - Multi-tenant support with brand-specific knowledge bases
+  - Structured fact extraction and source citation
 - [shadcn/ui](https://ui.shadcn.com)
   - Styling with [Tailwind CSS](https://tailwindcss.com)
   - Component primitives from [Radix UI](https://radix-ui.com) for accessibility and flexibility
@@ -60,3 +65,33 @@ pnpm dev
 ```
 
 Your app template should now be running on [localhost:3000](http://localhost:3000).
+
+## API Documentation
+
+This chatbot includes a comprehensive API system with knowledge graph integration. For detailed information about the API structure and usage:
+
+- **[API Documentation](./API_DOCUMENTATION.md)** - Complete API reference including request/response formats, authentication, and error handling
+- **[Knowledge Graph Documentation](./KNOWLEDGE_GRAPH.md)** - Detailed guide to the knowledge graph system, visualization, and data structures
+
+### Key API Features
+
+- **Chat API** (`/api/chat`) - Main endpoint for processing user messages with GraphRAG integration
+- **Structured Responses** - JSON responses with embedded knowledge graph facts and source citations
+- **Multi-tenant Support** - Brand-specific knowledge bases with tenant mapping
+- **Interactive Visualization** - SVG-based knowledge graph rendering with clickable entities and relationships
+
+### Knowledge Graph System
+
+The application integrates with Fast GraphRAG to provide:
+
+- **Entity Recognition** - Automatic extraction of entities (services, risks, organizations, etc.)
+- **Relationship Mapping** - Directed relationships between entities (MITIGATES, IMPLEMENTS, ADDRESSES, etc.)
+- **Source Attribution** - Clickable citations linking to original sources
+- **Visual Representation** - Interactive graph visualization with entity grouping and relationship arrows
+
+Example knowledge graph fact format:
+```
+(service:"risk management" url=https://example.com) -[ADDRESSES]-> (risk:"compliance issues") [1]
+```
+
+For complete implementation details, configuration options, and troubleshooting guides, see the documentation files linked above.

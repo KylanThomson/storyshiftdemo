@@ -2,9 +2,12 @@ import { Toaster } from 'sonner';
 import type { Metadata } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import { ThemeProvider } from '@/components/theme-provider';
+import { BrandingProvider } from '@/components/branding-provider';
 
 import './globals.css';
 import { SessionProvider } from 'next-auth/react';
+import { cookies } from 'next/headers';
+import { BRANDS, defaultBrandId, type BrandId } from '@/lib/brands';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://chat.vercel.ai'),
@@ -53,6 +56,10 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const cookieStore = await cookies();
+  const cookieBrand = cookieStore.get('brandId')?.value;
+  const initialBrandId: BrandId =
+    cookieBrand && cookieBrand in BRANDS ? (cookieBrand as BrandId) : defaultBrandId;
   return (
     <html
       lang="en"
@@ -61,7 +68,7 @@ export default async function RootLayout({
       // prop is necessary to avoid the React hydration mismatch warning.
       // https://github.com/pacocoursey/next-themes?tab=readme-ov-file#with-app
       suppressHydrationWarning
-      className={`${geist.variable} ${geistMono.variable}`}
+      className={`${geist.variable} ${geistMono.variable} theme-cyberpunk`}
     >
       <head>
         <script
@@ -70,15 +77,17 @@ export default async function RootLayout({
           }}
         />
       </head>
-      <body className="antialiased">
+      <body className="antialiased bg-cyber-grid min-h-screen">
         <ThemeProvider
           attribute="class"
           defaultTheme="system"
           enableSystem
           disableTransitionOnChange
         >
-          <Toaster position="top-center" />
-          <SessionProvider>{children}</SessionProvider>
+          <BrandingProvider initialBrandId={initialBrandId}>
+            <Toaster position="top-center" />
+            <SessionProvider>{children}</SessionProvider>
+          </BrandingProvider>
         </ThemeProvider>
       </body>
     </html>

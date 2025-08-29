@@ -24,7 +24,7 @@ const components: Partial<Components> = {
   },
   ul: ({ node, children, ...props }) => {
     return (
-      <ul className="list-decimal list-outside ml-4" {...props}>
+      <ul className="list-disc list-outside ml-4" {...props}>
         {children}
       </ul>
     );
@@ -40,7 +40,7 @@ const components: Partial<Components> = {
     return (
       // @ts-expect-error
       <Link
-        className="text-blue-500 hover:underline"
+        className="text-primary underline-offset-2 hover:underline focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-[2px]"
         target="_blank"
         rel="noreferrer"
         {...props}

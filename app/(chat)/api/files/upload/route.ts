@@ -8,13 +8,19 @@ import { auth } from '@/app/(auth)/auth';
 const FileSchema = z.object({
   file: z
     .instanceof(Blob)
-    .refine((file) => file.size <= 5 * 1024 * 1024, {
-      message: 'File size should be less than 5MB',
+    .refine((file) => file.size <= 20 * 1024 * 1024, {
+      message: 'File size should be less than 20MB',
     })
-    // Update the file type based on the kind of files you want to accept
-    .refine((file) => ['image/jpeg', 'image/png'].includes(file.type), {
-      message: 'File type should be JPEG or PNG',
-    }),
+    // Accept common text payloads for large prompts
+    .refine(
+      (file) =>
+        ['image/jpeg', 'image/png', 'application/json', 'text/plain'].includes(
+          file.type,
+        ),
+      {
+        message: 'File type should be JPEG, PNG, JSON, or TXT',
+      },
+    ),
 });
 
 export async function POST(request: Request) {

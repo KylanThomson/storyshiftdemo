@@ -1,44 +1,29 @@
-import {
-  convertToModelMessages,
-  createUIMessageStream,
-  JsonToSseTransformStream,
-  smoothStream,
-  stepCountIs,
-  streamText,
-} from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
-import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
 import {
   createStreamId,
   deleteChatById,
   getChatById,
   getMessageCountByUserId,
-  getMessagesByChatId,
   saveChat,
   saveMessages,
 } from '@/lib/db/queries';
-import { convertToUIMessages, generateUUID } from '@/lib/utils';
+import { generateUUID } from '@/lib/utils';
 import { generateTitleFromUserMessage } from '../../actions';
-import { createDocument } from '@/lib/ai/tools/create-document';
-import { updateDocument } from '@/lib/ai/tools/update-document';
-import { requestSuggestions } from '@/lib/ai/tools/request-suggestions';
-import { getWeather } from '@/lib/ai/tools/get-weather';
-import { isProductionEnvironment } from '@/lib/constants';
-import { myProvider } from '@/lib/ai/providers';
 import { entitlementsByUserType } from '@/lib/ai/entitlements';
 import { postRequestBodySchema, type PostRequestBody } from './schema';
-import { geolocation } from '@vercel/functions';
+import { ChatSDKError } from '@/lib/errors';
+import type { ChatMessage } from '@/lib/types';
+import type { VisibilityType } from '@/components/visibility-selector';
+import type { BrandId } from '@/lib/brands';
+import { callStructuredGraphRAG, callFastGraphRAG, brandIdToTenant } from '@/lib/graphrag/api';
+import { createUIMessageStream, JsonToSseTransformStream } from 'ai';
 import {
   createResumableStreamContext,
   type ResumableStreamContext,
 } from 'resumable-stream';
 import { after } from 'next/server';
-import { ChatSDKError } from '@/lib/errors';
-import type { ChatMessage } from '@/lib/types';
-import type { ChatModel } from '@/lib/ai/models';
-import type { VisibilityType } from '@/components/visibility-selector';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 let globalStreamContext: ResumableStreamContext | null = null;
 
@@ -49,7 +34,7 @@ export function getStreamContext() {
         waitUntil: after,
       });
     } catch (error: any) {
-      if (error.message.includes('REDIS_URL')) {
+      if (error.message?.includes('REDIS_URL')) {
         console.log(
           ' > Resumable streams are disabled due to missing REDIS_URL',
         );
@@ -76,13 +61,13 @@ export async function POST(request: Request) {
     const {
       id,
       message,
-      selectedChatModel,
       selectedVisibilityType,
+      selectedBrandId,
     }: {
       id: string;
       message: ChatMessage;
-      selectedChatModel: ChatModel['id'];
       selectedVisibilityType: VisibilityType;
+      selectedBrandId?: BrandId;
     } = requestBody;
 
     const session = await auth();
@@ -121,18 +106,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const messagesFromDb = await getMessagesByChatId({ id });
-    const uiMessages = [...convertToUIMessages(messagesFromDb), message];
-
-    const { longitude, latitude, city, country } = geolocation(request);
-
-    const requestHints: RequestHints = {
-      longitude,
-      latitude,
-      city,
-      country,
-    };
-
+    // Persist the user's message
     await saveMessages({
       messages: [
         {
@@ -146,82 +120,96 @@ export async function POST(request: Request) {
       ],
     });
 
+    // Create a stream id (kept for UI compatibility even though we're returning JSON)
     const streamId = generateUUID();
     await createStreamId({ streamId, chatId: id });
 
-    const stream = createUIMessageStream({
-      execute: ({ writer: dataStream }) => {
-        const result = streamText({
-          model: myProvider.languageModel(selectedChatModel),
-          system: systemPrompt({ selectedChatModel, requestHints }),
-          messages: convertToModelMessages(uiMessages),
-          stopWhen: stepCountIs(5),
-          experimental_activeTools:
-            selectedChatModel === 'chat-model-reasoning'
-              ? []
-              : [
-                  'getWeather',
-                  'createDocument',
-                  'updateDocument',
-                  'requestSuggestions',
-                ],
-          experimental_transform: smoothStream({ chunking: 'word' }),
-          tools: {
-            getWeather,
-            createDocument: createDocument({ session, dataStream }),
-            updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({
-              session,
-              dataStream,
-            }),
-          },
-          experimental_telemetry: {
-            isEnabled: isProductionEnvironment,
-            functionId: 'stream-text',
-          },
-        });
+    // Route chats through Structured GraphRAG API with fallback to legacy
+    try {
+      const company = brandIdToTenant(selectedBrandId);
+      const userQuestion =
+        message.parts
+          .filter((part) => part.type === 'text')
+          .map((part) => part.text)
+          .join(' ')
+          .trim() || '';
 
-        result.consumeStream();
+      const responseId = generateUUID();
+      let textBody = '';
+      let useStructuredFormat = false;
 
-        dataStream.merge(
-          result.toUIMessageStream({
-            sendReasoning: true,
-          }),
+      try {
+        // Try the new structured GraphRAG API first
+        const structuredResponse = await callStructuredGraphRAG(
+          company,
+          userQuestion,
+          process.env.STRUCTURED_GRAPHRAG_DATABASE || 'neo4j',
         );
-      },
-      generateId: generateUUID,
-      onFinish: async ({ messages }) => {
-        await saveMessages({
-          messages: messages.map((message) => ({
-            id: message.id,
-            role: message.role,
-            parts: message.parts,
-            createdAt: new Date(),
-            attachments: [],
-            chatId: id,
-          })),
-        });
-      },
-      onError: () => {
-        return 'Oops, an error occurred!';
-      },
-    });
 
-    const streamContext = getStreamContext();
+        // Format the structured response as JSON for the frontend to parse
+        textBody = JSON.stringify(structuredResponse, null, 2);
+        useStructuredFormat = true;
 
-    if (streamContext) {
-      return new Response(
-        await streamContext.resumableStream(streamId, () =>
-          stream.pipeThrough(new JsonToSseTransformStream()),
-        ),
-      );
-    } else {
-      return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
+        console.log('✅ Successfully used structured GraphRAG API');
+      } catch (structuredError) {
+        console.warn('⚠️ Structured GraphRAG API failed, falling back to legacy:', structuredError);
+
+        // Fallback to legacy Fast GraphRAG API
+        const legacyResponse = await callFastGraphRAG(
+          company,
+          userQuestion,
+          process.env.FAST_GRAPHRAG_DATABASE || 'neo4j',
+        );
+
+        textBody =
+          legacyResponse.answer ??
+          "I don't have enough information in the Graph Facts to answer that.";
+
+        if (legacyResponse.factsPreview?.length) {
+          textBody +=
+            '\n\n**Retrieved Facts:**\n' +
+            legacyResponse.factsPreview.slice(0, 10).map((f: string) => `• ${f}`).join('\n');
+        }
+
+        if (legacyResponse.sources?.length) {
+          textBody +=
+            '\n\n**Sources:**\n' +
+            legacyResponse.sources
+              .map((s: { id: number; url: string }) => `[${s.id}] ${s.url}`)
+              .join('\n');
+        }
+
+        console.log('✅ Successfully used legacy GraphRAG API');
+      }
+
+      const graphRAGMessage = {
+        id: responseId,
+        role: 'assistant' as const,
+        parts: [{ type: 'text' as const, text: textBody }],
+        createdAt: new Date(),
+        attachments: [],
+        chatId: id,
+      };
+
+      await saveMessages({ messages: [graphRAGMessage] });
+
+      // Return the complete message as JSON since GraphRAG doesn't stream
+      return Response.json({
+        id: responseId,
+        role: 'assistant',
+        content: textBody,
+        createdAt: new Date().toISOString(),
+        isStructured: useStructuredFormat,
+      }, { status: 200 });
+    } catch (error) {
+      console.error('❌ Both GraphRAG APIs failed:', error);
+      return new ChatSDKError('offline:chat').toResponse();
     }
   } catch (error) {
     if (error instanceof ChatSDKError) {
       return error.toResponse();
     }
+    return new ChatSDKError('bad_request:api').toResponse();
   }
 }
 

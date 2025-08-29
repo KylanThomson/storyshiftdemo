@@ -3,7 +3,8 @@ import {
   extractReasoningMiddleware,
   wrapLanguageModel,
 } from 'ai';
-import { xai } from '@ai-sdk/xai';
+import { openai } from '@ai-sdk/openai';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import {
   artifactModel,
   chatModel,
@@ -12,26 +13,32 @@ import {
 } from './models.test';
 import { isTestEnvironment } from '../constants';
 
+const google = createGoogleGenerativeAI({
+  apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GEMINI_API_KEY,
+});
+
 export const myProvider = isTestEnvironment
   ? customProvider({
-      languageModels: {
-        'chat-model': chatModel,
-        'chat-model-reasoning': reasoningModel,
-        'title-model': titleModel,
-        'artifact-model': artifactModel,
-      },
-    })
+    languageModels: {
+      'chat-model': chatModel,
+      'chat-model-gemini': chatModel,
+      'chat-model-reasoning': reasoningModel,
+      'title-model': titleModel,
+      'artifact-model': artifactModel,
+    },
+  })
   : customProvider({
-      languageModels: {
-        'chat-model': xai('grok-2-vision-1212'),
-        'chat-model-reasoning': wrapLanguageModel({
-          model: xai('grok-3-mini-beta'),
-          middleware: extractReasoningMiddleware({ tagName: 'think' }),
-        }),
-        'title-model': xai('grok-2-1212'),
-        'artifact-model': xai('grok-2-1212'),
-      },
-      imageModels: {
-        'small-model': xai.imageModel('grok-2-image'),
-      },
-    });
+    languageModels: {
+      'chat-model': openai('gpt-4o'),
+      'chat-model-gemini': google('models/gemini-2.5-flash'),
+      'chat-model-reasoning': wrapLanguageModel({
+        model: openai('gpt-4o-mini'),
+        middleware: extractReasoningMiddleware({ tagName: 'think' }),
+      }),
+      'title-model': openai('gpt-4o-mini'),
+      'artifact-model': openai('gpt-4o'),
+    },
+    imageModels: {
+      'small-model': openai.imageModel('dall-e-3'),
+    },
+  });
